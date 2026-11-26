@@ -20,12 +20,37 @@ jobs:
         with:
           gradle-version: 8.9
 
+      # 4.9.8: a chave de assinatura vem dos Secrets do repositório (não fica mais no projeto).
+      # Se faltar um Secret, o build para aqui com uma mensagem clara, em vez de gerar um APK com outra chave.
+      - name: Preparar a chave de assinatura
+        env:
+          NEXUS_KEYSTORE_B64: ${{ secrets.NEXUS_KEYSTORE_B64 }}
+          NEXUS_KEY_PASSWORD: ${{ secrets.NEXUS_KEY_PASSWORD }}
+        run: |
+          if [ -z "$NEXUS_KEYSTORE_B64" ] || [ -z "$NEXUS_KEY_PASSWORD" ]; then
+            echo "::error::Faltam os Secrets NEXUS_KEYSTORE_B64 e/ou NEXUS_KEY_PASSWORD (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+          echo "$NEXUS_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/nexus-release.keystore"
+          keytool -list -keystore "$RUNNER_TEMP/nexus-release.keystore" -storepass "$NEXUS_KEY_PASSWORD" > /dev/null \
+            || { echo "::error::A chave ou a senha dos Secrets não confere."; exit 1; }
+
       - name: Descompactar projeto
         run: unzip -o nexus-project.zip -d project
 
       - name: Compilar
         working-directory: project
+        env:
+          NEXUS_KEYSTORE_PATH: ${{ runner.temp }}/nexus-release.keystore
+          NEXUS_KEY_PASSWORD: ${{ secrets.NEXUS_KEY_PASSWORD }}
         run: gradle assembleDebug --no-daemon
+
+      # Mostra a impressão digital do certificado: deve ser sempre a mesma em todas as versões.
+      - name: Conferir a assinatura do APK
+        continue-on-error: true
+        run: |
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --print-certs project/app/build/outputs/apk/debug/*.apk | grep -i "SHA-256\|Signer #1 certificate DN"
 
       - uses: actions/upload-artifact@v4
         with:
